@@ -14,7 +14,7 @@ permissions:
 jobs:
   gemini-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
       - name: Call Gemini API
         env:
@@ -24,6 +24,7 @@ jobs:
           python - <<'PY'
           import json
           import os
+          import time
           import urllib.request
           import urllib.error
 
@@ -37,27 +38,43 @@ jobs:
                   "parts": [{"text": os.environ["USER_PROMPT"]}]
               }]
           }
-          request = urllib.request.Request(
-              url,
-              data=json.dumps(payload).encode("utf-8"),
-              headers={
-                  "Content-Type": "application/json",
-                  "x-goog-api-key": api_key
-              },
-              method="POST"
-          )
+          data = json.dumps(payload).encode("utf-8")
+          last_error = None
 
-          try:
-              with urllib.request.urlopen(request, timeout=90) as response:
-                  result = json.loads(response.read().decode("utf-8"))
-          except urllib.error.HTTPError as error:
-              details = error.read().decode("utf-8", errors="replace")
-              raise SystemExit(f"Gemini API HTTP {error.code}: {details}")
+          for attempt in range(1, 4):
+              request = urllib.request.Request(
+                  url,
+                  data=data,
+                  headers={
+                      "Content-Type": "application/json",
+                      "x-goog-api-key": api_key
+                  },
+                  method="POST"
+              )
+              try:
+                  with urllib.request.urlopen(request, timeout=120) as response:
+                      result = json.loads(response.read().decode("utf-8"))
+                  break
+              except urllib.error.HTTPError as error:
+                  details = error.read().decode("utf-8", errors="replace")
+                  if error.code not in (429, 500, 502, 503, 504) or attempt == 3:
+                      raise SystemExit(f"Gemini API HTTP {error.code}: {details}")
+                  last_error = f"HTTP {error.code}: {details}"
+              except (TimeoutError, urllib.error.URLError) as error:
+                  if attempt == 3:
+                      raise SystemExit(f"Gemini API bağlantı hatası: {error}")
+                  last_error = str(error)
+
+              wait_seconds = attempt * 10
+              print(f"Geçici API/bağlantı sorunu: {last_error}. {wait_seconds} saniye sonra tekrar denenecek.")
+              time.sleep(wait_seconds)
+          else:
+              raise SystemExit(f"Gemini API yanıt vermedi: {last_error}")
 
           parts = result.get("candidates", [{}])[0].get("content", {}).get("parts", [])
-          answer = "\n".join(part.get("text", "") for part in parts if "text" in part)
+          answer = "\\n".join(part.get("text", "") for part in parts if "text" in part)
           if not answer:
               raise SystemExit("Gemini yanıt döndürmedi: " + json.dumps(result, ensure_ascii=False))
-          print("\n===== GEMINI YANITI =====\n")
+          print("\\n===== GEMINI YANITI =====\\n")
           print(answer)
           PY
